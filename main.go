@@ -9,11 +9,10 @@ import (
 	"sync"
 	"syscall"
 
-	"github.com/opensourceways/community-robot-lib/config"
-	"github.com/opensourceways/community-robot-lib/kafka"
-	"github.com/opensourceways/community-robot-lib/logrusutil"
-	"github.com/opensourceways/community-robot-lib/mq"
-	liboptions "github.com/opensourceways/community-robot-lib/options"
+	kafka "github.com/opensourceways/kafka-lib/agent"
+	"github.com/opensourceways/server-common-lib/config"
+	"github.com/opensourceways/server-common-lib/logrusutil"
+	liboptions "github.com/opensourceways/server-common-lib/options"
 	"github.com/sirupsen/logrus"
 )
 
@@ -51,7 +50,9 @@ func main() {
 		os.Args[1:]...,
 	)
 	if err := o.Validate(); err != nil {
-		logrus.Fatalf("Invalid options, err:%s", err.Error())
+		logrus.Errorf("Invalid options, err:%s", err.Error())
+
+		return
 	}
 
 	if o.enableDebug {
@@ -64,7 +65,9 @@ func main() {
 		return new(configuration)
 	})
 	if err := configAgent.Start(o.service.ConfigFile); err != nil {
-		logrus.WithError(err).Fatal("Error starting config agent.")
+		logrus.Errorf("error starting config agent, err:%s", err.Error())
+
+		return
 	}
 
 	defer configAgent.Stop()
@@ -80,20 +83,19 @@ func main() {
 
 	cfg, err := getConfig()
 	if err != nil {
-		logrus.WithError(err).Fatal("get config.")
+		logrus.Errorf("get config failed, err:%s", err.Error())
+
+		return
 	}
 
 	// init kafka
-	kafkaCfg, err := cfg.kafkaConfig()
-	if err != nil {
-		logrus.Errorf("Error loading kfk config, err:%v.", err)
+	if err = kafka.Init(&cfg.Config, logrus.WithField("module", "kfk")); err != nil {
+		logrus.Errorf("Error connecting kfk mq, err:%s", err.Error())
+
+		return
 	}
 
-	if err := connetKafka(&kafkaCfg); err != nil {
-		logrus.Fatalf("Error connecting kfk mq, err:%v", err)
-	}
-
-	defer kafka.Disconnect()
+	defer kafka.Exit()
 
 	// server
 	d, err := newDispatcher(
@@ -108,29 +110,13 @@ func main() {
 		},
 	)
 	if err != nil {
-		logrus.Fatalf("Error new dispatcherj, err:%s", err.Error())
+		logrus.Errorf("Error new dispatcherj, err:%s", err.Error())
+
+		return
 	}
 
 	// run
 	run(d)
-}
-
-func connetKafka(cfg *mq.MQConfig) error {
-	tlsConfig, err := cfg.TLSConfig.TLSConfig()
-	if err != nil {
-		return err
-	}
-
-	err = kafka.Init(
-		mq.Addresses(cfg.Addresses...),
-		mq.SetTLSConfig(tlsConfig),
-		mq.Log(logrus.WithField("module", "kfk")),
-	)
-	if err != nil {
-		return err
-	}
-
-	return kafka.Connect()
 }
 
 func run(d *dispatcher) {

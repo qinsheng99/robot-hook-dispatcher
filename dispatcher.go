@@ -7,9 +7,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/opensourceways/community-robot-lib/kafka"
-	"github.com/opensourceways/community-robot-lib/mq"
-	"github.com/opensourceways/community-robot-lib/utils"
+	kafka "github.com/opensourceways/kafka-lib/agent"
+	"github.com/opensourceways/server-common-lib/utils"
 	"github.com/sirupsen/logrus"
 )
 
@@ -42,28 +41,29 @@ func newDispatcher(
 }
 
 func (d *dispatcher) run(ctx context.Context) error {
-	s, err := kafka.Subscribe(
-		d.topic, d.handle,
-		func(opt *mq.SubscribeOptions) {
-			opt.Queue = component
-		},
-	)
-	if err != nil {
+	if err := d.subscribe(d.topic); err != nil {
 		return err
 	}
 
 	<-ctx.Done()
 
-	return s.Unsubscribe()
+	return nil
 }
 
-func (d *dispatcher) handle(event mq.Event) error {
-	msg := event.Message()
-	if err := d.validateMessage(msg); err != nil {
+func (d *dispatcher) subscribe(topic string) error {
+	h := map[string]kafka.Handler{
+		topic: d.handle,
+	}
+
+	return kafka.Subscribe(component, h)
+}
+
+func (d *dispatcher) handle(data []byte, header map[string]string) error {
+	if err := d.validateMessage(data, header); err != nil {
 		return err
 	}
 
-	d.dispatch(msg)
+	d.dispatch(data, header)
 
 	d.speedControl()
 
@@ -106,39 +106,35 @@ func (d *dispatcher) speedControl() {
 	}
 }
 
-func (d *dispatcher) validateMessage(msg *mq.Message) error {
-	if msg == nil {
-		return errors.New("get a nil msg from broker")
-	}
-
-	if len(msg.Header) == 0 || msg.Header[headerUserAgent] != d.userAgent {
+func (d *dispatcher) validateMessage(data []byte, header map[string]string) error {
+	if len(header) == 0 || header[headerUserAgent] != d.userAgent {
 		return errors.New("unexpect message: invalid header")
 	}
 
-	if len(msg.Body) == 0 {
+	if len(data) == 0 {
 		return errors.New("unexpect message: The payload is empty")
 	}
 
 	return nil
 }
 
-func (d *dispatcher) dispatch(msg *mq.Message) {
-	if err := d.send(msg); err != nil {
+func (d *dispatcher) dispatch(data []byte, header map[string]string) {
+	if err := d.send(data, header); err != nil {
 		logrus.Errorf("send message, err:%s", err.Error())
 	} else {
 		d.sentNum++
 	}
 }
 
-func (d *dispatcher) send(msg *mq.Message) error {
+func (d *dispatcher) send(data []byte, header map[string]string) error {
 	req, err := http.NewRequest(
-		http.MethodPost, d.endpoint, bytes.NewBuffer(msg.Body),
+		http.MethodPost, d.endpoint, bytes.NewBuffer(data),
 	)
 	if err != nil {
 		return err
 	}
 
-	for k, v := range msg.Header {
+	for k, v := range header {
 		req.Header.Add(k, v)
 	}
 
